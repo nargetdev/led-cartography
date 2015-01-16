@@ -2,11 +2,12 @@
   "name": "led-cartography",
   "version": "1.0.0",
   "description": "Experimental image based LED mapping tools",
-  "main": "capture.js",
+  "main": "photographer.js",
   "dependencies": {
     "async": "^0.9.0",
     "gphoto2": "^0.1.6",
-    "opencv": "^1.0.0",
+    "opencv": "git://github.com/scanlime/node-opencv.git#85c3a90db71d8498",
+    "sprintf-js": "^1.0.2",
     "ws": "^0.6.5"
   },
   "devDependencies": {},
