@@ -19,6 +19,20 @@ var cv = require('opencv');
 var exec = require('child_process').exec;
 
 
+var peakImageDiff = function (img1, img2)
+{
+    /*
+     * Compare two images, calculating the peak absolute value difference between them.
+     * This is better than mean squared error for our purposes, since we expect there to
+     * be localized hotspots that differ with most of the image remaining the same.
+     */
+
+    var diff = new cv.Matrix(img1.width(), img1.height());
+    diff.absDiff(img1, img2);
+    return diff.minMaxLoc().maxVal;
+}
+
+
 var LEDStrip = function (device, index)
 {
     /*
@@ -29,23 +43,35 @@ var LEDStrip = function (device, index)
      * If we see several missing LEDs, we assume the strip has ended.
      */
 
+    var MAX_STRIP_LENGTH = 64;
+    var THUMBNAIL_SCALE_LOG2 = 3;   // Log2 of the amount to downscale thumbnails by before storage
+    var NOISE_THRESHOLD = 10;       // Diffs less than this mean the image hasn't changed meaningfully
+    var MAXIMUM_GAP = 2;            // Maximum number of consecutive missing LEDs before we give up on a strip
+
     var strip = this;
     this.device = device;
     this.index = index;
-    this.stripLength = 0;
+    this.stripLength = MAX_STRIP_LENGTH;
     this.nextLed = 0;
     this.thumbnails = [];
+    this.peakDiffs = [];
     this.complete = false;
 
-    var THUMBNAIL_SCALE_LOG2 = 3;   // Log2 of the amount to downscale thumbnails by before storage
+    this.toString = function () {
+        return sprintf("fc %s strip %d", strip.device.serial, strip.index);
+    };
 
     this.step = function (stepNumber, fc, camera, callback) {
         var thisLed = strip.nextLed;
-        var fcLedIndex = strip.index * 64 + thisLed;
+        if (thisLed >= this.stripLength) {
+            this.complete = true;
+            return callback();
+        }
+
+        var fcLedIndex = strip.index * MAX_STRIP_LENGTH + thisLed;
         strip.nextLed += 1;
 
-        console.log(sprintf("Step %s - Fc #%s strip %d, led %d",
-            stepNumber, this.device.serial, strip.index, thisLed));
+        console.log(sprintf("[%s] Step %d, photographing led %d", strip.toString(), stepNumber, thisLed));
 
         var filenameSlug = sprintf('%05d-%s-%03d', stepNumber, this.device.serial, fcLedIndex);
 
@@ -65,7 +91,7 @@ var LEDStrip = function (device, index)
                 });
             });
         });
-    }
+    };
 
     this.processImage = function (image, filenameSlug, thisLed, callback) {
         var rawFile = 'data/raw-' + filenameSlug + '.CR2';
@@ -99,17 +125,53 @@ var LEDStrip = function (device, index)
             strip.analyzeThumbnails,
 
         ], callback);
-    }
+    };
 
     this.analyzeThumbnails = function (callback) {
+        var i = 0;
+        var img1, img2;
 
-        // if (true) { // Did we see this LED?
-        //  this.stripLength = thisLed + 1;
-        //  if (this.stripLength == 64) {
-        //      this.complete = true;
-        //  }
-        // }
-    }
+        // Calculate any peaks we're missing that we have source data for.
+        while ( (img1 = strip.thumbnails[i])
+            &&  (img2 = strip.thumbnails[i + 1]) ) {
+            if (strip.peakDiffs[i] == undefined) {
+                strip.peakDiffs[i] = peakImageDiff(img1, img2);
+            }
+            i++;
+        }
+
+        if (strip.peakDiffs.length > 0) {
+            console.log(sprintf("[%s] diffs: %s", strip.toString(), strip.peakDiffs));
+        }
+
+        // Have we found the end of the strip?
+        var beginGap = null;
+        for (var i = 0; i < strip.peakDiffs.length; i++) {
+            if (strip.peakDiffs[i] < NOISE_THRESHOLD) {
+                // Images i and i+1 seem like they're the same.
+                // This means neither image has a visible LED, so the gap begins or continues.
+                if (beginGap == null) {
+                    beginGap = i;
+                }
+
+                if (i - beginGap >= MAXIMUM_GAP) {
+                    // Assume this strip has ended
+                    strip.setLength(beginGap);
+                    break;
+                }
+            } else {
+                // Not a gap
+                beginGap = null;
+            }
+        }
+
+        callback();
+    };
+
+    this.setLength = function (length) {
+        console.log(sprintf("[%s] determined length: %d", strip.toString(), length));
+        strip.stripLength = length;
+    };
 }
 
 
@@ -172,6 +234,7 @@ function main(callback)
 
             // Done?
             if (pendingStrips.length == 0) {
+                fc.socket.close();
                 return callback(null);
             }
 
