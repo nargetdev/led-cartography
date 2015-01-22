@@ -10,7 +10,9 @@
     "randy": "^1.5.1",
     "sprintf-js": "^1.0.2",
     "ws": "^0.6.5",
-    "nomnom": "~1.8.1"
+    "nomnom": "~1.8.1",
+    "worker-farm": "~1.1.0",
+    "join": "~3.0.0"
   },
   "devDependencies": {},
   "scripts": {

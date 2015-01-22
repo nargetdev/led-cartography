@@ -24,8 +24,8 @@ var os = require('os');
 var path = require('path');
 var util = require('util');
 var randy = require('randy');
-var cv = require('opencv');
-var exec = require('child_process').exec;
+var workerFarm = require('worker-farm');
+var join = require('join').Join;
 
 var opts = require("nomnom")
    .option('data', {
@@ -66,6 +66,14 @@ var opts = require("nomnom")
    .parse();
 
 
+var workers = workerFarm({
+    maxConcurrentWorkers: opts.concurrency,
+}, require.resolve('./lib/image-worker.js'), [
+    'thumbnailer',
+    'calculatePeakDiff',
+]);
+
+
 var tempCounter = 0;
 
 function tempSuffix()
@@ -94,41 +102,23 @@ function generateThumbnail(name, io, jNode, callback)
         return callback();
     }
 
-    async.waterfall([
+    var rawFilePath = path.join(io.dataPath, jNode.rawFile);
+    var thumbFile = 'thumb-' + name + '.png';
+    var thumbPath = path.join(io.dataPath, thumbFile);
+    var tempPath = thumbPath + tempSuffix();
 
-        // Extract the thumbnail image (much faster than full processing)
-        async.apply(exec, 'dcraw -e -c ' + path.join(io.dataPath, jNode.rawFile),
-            {encoding: 'binary', maxBuffer: 100 * 1024 * 1024}),
+    workers.thumbnailer(rawFilePath, tempPath, opts.thumbscale, function (err) {
+        if (err) return callback(err);
 
-        // Let OpenCV parse and decompress the image
-        function (stdout, stderr, callback) {
-            var jpeg = new Buffer(stdout, 'binary');
-            cv.readImage(jpeg, callback);
-        },
+        fs.rename(tempPath, thumbPath, function (err) {
+            if (err) return callback(err);
 
-        // Compute and save the thumbnail
-        function (img, callback) {
-            console.log("Processing thumbnail " + name);
-
-            img.convertGrayscale();
-            for (var i = 0; i < opts.thumbscale; i++) {
-                img.pyrDown();
-            }
-
-            var thumbFile = 'thumb-' + name + '.png';
-            var filename = path.join(io.dataPath, thumbFile);
-            var tempFile = filename + tempSuffix();
-
-            img.save(tempFile);
-            fs.rename(tempFile, filename, function (err) {
-
-                // Success
-                jNode.thumbFile = thumbFile;
-                callback();
-
-            });
-        },
-    ], callback);
+            // Success
+            console.log("Processed thumbnail " + name);
+            jNode.thumbFile = thumbFile;
+            callback();
+        });
+    });
 }
 
 
@@ -254,23 +244,14 @@ function generatePeakDiff(io, json, jLed, callback)
         return callback();
     }
 
-    async.map([
+    workers.calculatePeakDiff(
         path.join(io.dataPath, json.darkFrames[jLed.darkFrame].thumbFile),
         path.join(io.dataPath, jLed.thumbFile),
-    ],
-    cv.readImage, function (err, img) {
-        if (err) return callback(err);
-
-        // Meh, the RGB channels seem to come back when saving/loading thumbnails
-        img[0].convertGrayscale();
-        img[1].convertGrayscale();
-
-        var diff = new cv.Matrix(img[0].width(), img[0].height());
-        diff.absDiff(img[0], img[1]);
-
-        jLed.peakDiff = diff.minMaxLoc().maxVal;
-        callback();
-    });
+        function (err, result) {
+            jLed.peakDiff = result;
+            callback();
+        }
+    );
 }
 
 
@@ -321,7 +302,8 @@ function updateStripLength(stripIndex, jDev, callback)
     return callback();
 }
 
-function handleOneLed(led, io, json, jsonSaveFn, queue, callback)
+
+function handleOneLed(led, io, json, photoCallback, finalCallback)
 {
     /*
      * Handle the photography and processing for a single LED.
@@ -333,22 +315,23 @@ function handleOneLed(led, io, json, jsonSaveFn, queue, callback)
 
     // Skip LEDs that are beyond the detected strip length
     if (jStrip.length != undefined && led.stripPosition >= jStrip.length) {
-        return callback();
+        photoCallback();
+        finalCallback();
+        return;
     }
 
     var jLed = (jDev.leds[led.index] = jDev.leds[led.index] || {});
 
-    photographLed(led, io, jLed, callback, function (err) {
-        if (err) return callback(err);
-        queue.push(async.apply(async.waterfall, [
+    photographLed(led, io, jLed, photoCallback, function (err) {
+        if (err) return finalCallback(err);
+        async.waterfall([
             // Asynchronous processing for each photo
 
             async.apply(generateThumbnail, led.string, io, jLed),
             async.apply(generatePeakDiff, io, json, jLed),
             async.apply(updateStripLength, led.stripIndex, jDev),
-            jsonSaveFn,
 
-        ]));
+        ], finalCallback);
     });
 }
 
@@ -440,6 +423,8 @@ function photographer(dataPath, callback)
         return callback("Data path must be a directory. Create a new empty directory to start from scratch.");
     }
 
+    var pending = join.create();
+
     var jsonPath = path.join(dataPath, 'photos.json');
     var lastSavedJson = fs.existsSync(jsonPath) ? fs.readFileSync(jsonPath) : '{}';
     var json = JSON.parse(lastSavedJson);
@@ -457,20 +442,34 @@ function photographer(dataPath, callback)
         }
     };
 
-    var queue = async.queue(function (fn, callback) { fn(callback) }, opts.concurrency);
-
     ioSetup(function (err, io) {
         if (err) return callback(err);
         io.dataPath = dataPath;
 
         async.mapSeries(collectLeds(io, json), function (led, callback) {
-            handleOneLed(led, io, json, jsonSaveFn, queue, callback);
+
+            // Immediately after photography, move to the next LED- but make
+            // sure the processing callbacks finish eventually. Also checkpoint
+            // the JSON after each LED finishes its background processing.
+
+            async.waterfall([
+                async.apply(handleOneLed, led, io, json, callback),
+                jsonSaveFn,
+            ], pending.add());
+
         }, function (err) {
-            // Done with photography; may still be background processing happening
             if (err) return callback(err);
-            ioClose(io, function (err) {
-                if (err) return callback(err);
-                jsonSaveFn(callback);
+
+            // Done with photography
+            async.waterfall([
+                async.apply(ioClose, io),
+                jsonSaveFn,
+            ], pending.add());
+
+            console.log("Waiting for processing tasks to complete");
+            pending.then(function () {
+                workerFarm.end(workers);
+                callback();
             });
         });
     });
@@ -482,4 +481,5 @@ photographer(opts.data, function (err) {
         console.log(err);
         process.exit(1);
     }
+    console.log("Done.");
 });
