@@ -232,10 +232,14 @@ function main(callback)
             shasum.update(seed + stepNumber);
             var stepHash = shasum.digest();
 
-            // Done?
+            // Done? Turn off the lights and close the FC connection
             if (pendingStrips.length == 0) {
-                fc.socket.close();
-                return callback(null);
+                fc.lightsOff(function (err) {
+                    if (err) return callback(err);
+                    fc.socket.close();
+                    callback();
+                });
+                return;
             }
 
             // Repeatably choose a random pending strip
