@@ -20,16 +20,50 @@ var fadecandy = require('./lib/fadecandy.js');
 var GPhoto = require('gphoto2');
 var async = require('async');
 var fs = require('fs');
+var os = require('os');
 var path = require('path');
 var util = require('util');
 var randy = require('randy');
 var cv = require('opencv');
 var exec = require('child_process').exec;
 
-var THUMBNAIL_SCALE_LOG2 = 3;   // Log2 of the amount to downscale thumbnails by before storage
-var NOISE_THRESHOLD = 10;       // Diffs less than this mean the image hasn't changed meaningfully
-var MAXIMUM_GAP = 2;            // Maximum number of consecutive missing LEDs before we give up on a strip
-var DARK_INTERVAL = 60;         // Take a new dark frame every N seconds
+var opts = require("nomnom")
+   .option('data', {
+      abbr: 'd',
+      required: true,
+      help: 'Data directory for photos and JSON'
+   })
+   .option('processonly', {
+      abbr: 'p',
+      flag: true,
+      help: "Don't connect to Fadecandy or the camera, just process existing photos"
+   })
+   .option('concurrency', {
+      abbr: 'c',
+      default: os.cpus().length,
+      help: 'How many processing tasks to run in parallel',
+   })
+   .option('thumbscale', {
+      default: 3,
+      help: 'Log2 of amount to downscale thumbnails by',
+   })
+   .option('noisethreshold', {
+      default: 10,
+      help: 'Below this peakDiff, assume an LED is missing',
+   })
+   .option('maxgap', {
+      default: 2,
+      help: 'If more than this many LEDs are missing, assume the strip has ended',
+   })
+   .option('darkinterval', {
+      default: 60,
+      help: 'Dark frames must be at least this recent, in seconds',
+   })
+   .option('fcserver', {
+      default: 'ws://localhost:7890',
+      help: 'Fadecandy server URL',
+   })
+   .parse();
 
 
 var tempCounter = 0;
@@ -74,8 +108,10 @@ function generateThumbnail(name, io, jNode, callback)
 
         // Compute and save the thumbnail
         function (img, callback) {
+            console.log("Processing thumbnail " + name);
+
             img.convertGrayscale();
-            for (var i = 0; i < THUMBNAIL_SCALE_LOG2; i++) {
+            for (var i = 0; i < opts.thumbscale; i++) {
                 img.pyrDown();
             }
 
@@ -129,7 +165,7 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
             atomicWriteFile(path.join(io.dataPath, rawFile), image, function(err) {
                 if (err) return finalCallback(err);
                 jNode.rawFile = rawFile;
-                generateThumbnail(name, io, jNode, finalCallback);
+                finalCallback();
             });
         });
     });
@@ -139,11 +175,21 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
 function photographLed(led, io, jLed, photoCallback, finalCallback)
 {
     // Photograph a single LED only if the json doesn't already contain a valid RAW photo.
+    // Takes dark frames as necessary. This is a no-op if the photo already exists.
 
     photographCommon(led.string, io, jLed, function (callback) {
 
-        console.log('Photographing ' + led.string);
-        io.fc.singleLight({serial: led.device}, led.index, callback);
+        var darkFrame = jLed.darkFrame || currentDarkFrameIndex(json);
+
+        photographDarkness(io, json, darkFrame, function (err) {
+            if (err) return finalCallback(err);
+
+            // Dark frame, taken in the recent past
+            jLed.darkFrame = darkFrame;
+
+            console.log('Photographing ' + led.string);
+            io.fc.singleLight({serial: led.device}, led.index, callback);
+        });
 
     }, photoCallback, finalCallback);
 }
@@ -186,7 +232,7 @@ function currentDarkFrameIndex(json)
 
     if (frame && frame.timestamp) {
         var ts = new Date(frame.timestamp).getTime();
-        if (Date.now() - ts < DARK_INTERVAL * 1000) {
+        if (Date.now() - ts < opts.darkinterval * 1000) {
             return index;
         }
     }
@@ -204,7 +250,8 @@ function generatePeakDiff(io, json, jLed, callback)
      */
 
     if (jLed.peakDiff != undefined) {
-        callback();
+        // Already calculated
+        return callback();
     }
 
     async.map([
@@ -251,7 +298,7 @@ function updateStripLength(stripIndex, jDev, callback)
             return callback();
         }
 
-        if (jLed.peakDiff >= NOISE_THRESHOLD) {
+        if (jLed.peakDiff >= opts.noisethreshold) {
             // LED is visible
             gap = null;
             continue;
@@ -262,7 +309,7 @@ function updateStripLength(stripIndex, jDev, callback)
             gap = i;
         }
 
-        if (i - gap >= MAXIMUM_GAP) {
+        if (i - gap >= opts.maxgap) {
             // Assume this strip has ended
             jStrip.length = gap;
             return callback();
@@ -274,8 +321,7 @@ function updateStripLength(stripIndex, jDev, callback)
     return callback();
 }
 
-
-function handleOneLed(led, io, json, photoCallback, finalCallback)
+function handleOneLed(led, io, json, jsonSaveFn, queue, callback)
 {
     /*
      * Handle the photography and processing for a single LED.
@@ -287,31 +333,22 @@ function handleOneLed(led, io, json, photoCallback, finalCallback)
 
     // Skip LEDs that are beyond the detected strip length
     if (jStrip.length != undefined && led.stripPosition >= jStrip.length) {
-        photoCallback();
-        finalCallback();
-        return;
+        return callback();
     }
 
     var jLed = (jDev.leds[led.index] = jDev.leds[led.index] || {});
-    var darkFrame = jLed.darkFrame || currentDarkFrameIndex(json);
 
-    photographDarkness(io, json, darkFrame, function (err) {
-        if (err) return finalCallback(err);
+    photographLed(led, io, jLed, callback, function (err) {
+        if (err) return callback(err);
+        queue.push(async.apply(async.waterfall, [
+            // Asynchronous processing for each photo
 
-        photographLed(led, io, jLed, photoCallback, function (err) {
-            if (err) return finalCallback(err);
+            async.apply(generateThumbnail, led.string, io, jLed),
+            async.apply(generatePeakDiff, io, json, jLed),
+            async.apply(updateStripLength, led.stripIndex, jDev),
+            jsonSaveFn,
 
-            // Dark frame, taken in the recent past
-            jLed.darkFrame = darkFrame;
-
-            // Calculate the peak pixel difference between this photo and the dark frame
-            generatePeakDiff(io, json, jLed, function (err) {
-                if (err) return finalCallback(err);
-
-                // Update strip length if we can
-                updateStripLength(led.stripIndex, jDev, finalCallback);
-            });
-        });
+        ]));
     });
 }
 
@@ -338,6 +375,65 @@ function cameraSetup(callback)
 }
 
 
+function ioSetup(callback)
+{
+    var map = {};
+
+    if (!opts.processonly) {
+        map.fc = async.apply(fadecandy.connect, opts.fcserver);
+        map.camera = cameraSetup;
+    }
+
+    async.parallel(map, callback);
+}
+
+
+function ioClose(io, callback)
+{
+    if (io.fc) {
+        io.fc.lightsOff(function (err) {
+            if (err) return callback(err);
+            io.fc.socket.close();
+            callback();
+        });
+    } else {
+        callback();
+    }
+}
+
+
+function collectLeds(io, json)
+{
+    var rng = randy.instance();
+
+    // Persistent random seed
+    if (json.random) {
+        rng.setState(json.random);
+    }
+    json.random = rng.getState();
+
+    if (io.fc) {
+        // Shuffle the list of possible LEDs, so we visit them in an order that's been
+        // decorrelated from their physical position.
+
+        var leds = fadecandy.ledsForDeviceList(io.fc.devices);
+        rng.shuffleInplace(leds);
+
+    } else {
+        // If we're operating without an FC server, just parse through the
+        // existing LEDs we see in the JSON file.
+
+        var leds = [];
+        for (devSerial in (json.devices || {})) {
+            leds = leds.concat(fadecandy.ledsForDevice(devSerial));
+        }
+    }
+
+    leds.sort(function (a,b) { return a.stripPosition - b.stripPosition; });
+    return leds;
+}
+
+
 function photographer(dataPath, callback)
 {
     if (!fs.statSync(dataPath).isDirectory()) {
@@ -345,65 +441,43 @@ function photographer(dataPath, callback)
     }
 
     var jsonPath = path.join(dataPath, 'photos.json');
-    var json = JSON.parse(fs.existsSync(jsonPath) ? fs.readFileSync(jsonPath) : '{}');
+    var lastSavedJson = fs.existsSync(jsonPath) ? fs.readFileSync(jsonPath) : '{}';
+    var json = JSON.parse(lastSavedJson);
     json.devices = json.devices || {};
     json.darkFrames = json.darkFrames || [];
 
-    // Persistent random seed
-    if (json.random) {
-        randy.setState(json.random);
-    }
-    json.random = randy.getState();
+    var jsonSaveFn = function (callback) {
+        // Only write the JSON if it's changed
+        var savedJson = JSON.stringify(json, null, '\t');
+        if (savedJson == lastSavedJson) {
+            callback();
+        } else {
+            lastSavedJson = savedJson;
+            atomicWriteFile(jsonPath, savedJson, callback);
+        }
+    };
 
-    async.parallel({
+    var queue = async.queue(function (fn, callback) { fn(callback) }, opts.concurrency);
 
-        fc: async.apply(fadecandy.connect, 'ws://localhost:7890'),
-        camera: cameraSetup,
-
-    }, function (err, io) {
-
+    ioSetup(function (err, io) {
         if (err) return callback(err);
         io.dataPath = dataPath;
 
-        // Shuffle the list of possible LEDs, so we visit them in an order that's been
-        // decorrelated from their physical position.
-
-        var leds = fadecandy.enumerateDeviceLeds(io.fc.devices);
-        randy.shuffleInplace(leds);
-        leds.sort(function (a,b) { return a.stripPosition - b.stripPosition; });
-
-        // Photograph each LED, saving our state after each one
-
-        async.mapSeries(leds, function (led, callback) {
-
-            handleOneLed(led, io, json, callback, function (err) {
-                // Asynchronous completion callback
-                if (err) return callback(err);
-                atomicWriteFile(jsonPath, JSON.stringify(json, null, '\t'), function (err) {
-                    if (err) return callback(err);
-                });
-            });
-
+        async.mapSeries(collectLeds(io, json), function (led, callback) {
+            handleOneLed(led, io, json, jsonSaveFn, queue, callback);
         }, function (err) {
+            // Done with photography; may still be background processing happening
             if (err) return callback(err);
-
-            console.log("Done!");
-            io.fc.lightsOff(function (err) {
+            ioClose(io, function (err) {
                 if (err) return callback(err);
-                io.fc.socket.close();
-                callback();
+                jsonSaveFn(callback);
             });
         });
     });
 }
 
 
-if (process.argv.length != 3) {
-    console.log("usage: photographer.js <data path>");
-    process.exit(1);
-}
-
-photographer(process.argv[2], function (err) {
+photographer(opts.data, function (err) {
     if (err) {
         console.log(err);
         process.exit(1);
