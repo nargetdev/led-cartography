@@ -25,13 +25,33 @@ var opts = require("nomnom")
       abbr: 'c',
       help: 'Path to JSON config file we output [<data>/fcserver.json]'
    })
+   .option('scale', {
+      abbr: 's',
+      default: 4,
+      help: 'How many OPC units wide should our photos be?'
+   })
+   .option('plane', {
+      abbr: 'p',
+      default: 'xz',
+      help: 'Which 2D plane should we map the photos to?'
+   })
    .parse();
 
 opts.config = opts.config || path.join(opts.data, 'fcserver.json');
 opts.layout = opts.layout || path.join(opts.data, 'layout.json');
 var photos = JSON.parse(fs.readFileSync(path.join(opts.data, 'photos.json')))
+
 var cf = new fadecandy.ConfigFactory();
 var layout = [];
+
+function mapToPlane(x, y) {
+    var point = [0,0,0];
+    var axes = { x: [1,0,0], y: [0,1,0], z: [0,0,1] };
+    for (var i = 0; i < 3; i++) {
+        point[i] = x * axes[opts.plane[0]][i] + y * axes[opts.plane[1]][i];
+    }
+    return point;
+}
 
 for (var serial in photos.devices) {
     var jDev = photos.devices[serial];
@@ -43,10 +63,13 @@ for (var serial in photos.devices) {
         if (led.lightmap) {
             var opcIndex = cf.mapPixel(serial, index);
             var centroid = led.lightmap.centroid;
-            var s = 10;
+            var aspect = led.lightmap.size.width / led.lightmap.size.height;
 
             layout[opcIndex] = {
-                point: [ (centroid.x - 0.5) * s, 0, (centroid.y - 0.5) * s ]
+                point: mapToPlane(
+                    (centroid.x - 0.5) * opts.scale,
+                    (centroid.y - 0.5) * opts.scale / aspect
+                )
             };
         }
     }
