@@ -67,11 +67,17 @@ var opts = require("nomnom")
    .parse();
 
 
+/*
+ * CPU-hungry image manipulation routines run in a worker pool
+ */
 var workers = workerFarm({
     maxConcurrentWorkers: opts.concurrency,
+    maxConcurrentCallsPerWorker: 1,
 }, require.resolve('./lib/image-worker.js'), [
     'thumbnailer',
     'calculatePeakDiff',
+    'extractDarkPGM',
+    'calculateLightImage',
 ]);
 
 
@@ -239,7 +245,98 @@ function generatePeakDiff(io, json, jLed, callback)
             path.join(io.dataPath, json.darkFrames[jLed.darkFrame].thumbFile),
             path.join(io.dataPath, jLed.thumbFile),
             function (err, result) {
+                if (err) return callback(err);
                 jLed.peakDiff = result;
+                callback();
+            }
+        );
+    });
+}
+
+
+function memoizeTask(taskMemo, name, callback)
+{
+    /*
+     * If a task by the given name is already in taskMemo, add the callback
+     * to the list and return null. If we're first, returns a function that
+     * will invoke all callbacks that were added to the memo since.
+     */
+
+    if (name in taskMemo) {
+        taskMemo[name].push(callback);
+        return null;
+    }
+
+    taskMemo[name] = [callback];
+
+    return function () {
+        var cb = taskMemo[name];
+        delete taskMemo[name];
+
+        for (var i = 0; i < cb.length; i++) {
+            cb[i].apply(arguments);
+        }
+    }
+}
+
+
+function generateDarkPGM(io, json, taskMemo, index, callback)
+{
+    /*
+     * Generate the pgmFile for a dark frame, if it doesn't already exist.
+     */
+ 
+    var name = darkFrameName(index);
+
+    // Combine this with other callbacks waiting on the same frame
+    var complete = memoizeTask(taskMemo, name, callback);
+    if (!complete) {
+        return;
+    }
+
+    var jNode = json.darkFrames[index];
+    if (jNode.pgmFile && fs.existsSync(path.join(io.dataPath, jNode.pgmFile))) {
+        return complete();
+    }
+
+    var rawFilePath = path.join(io.dataPath, jNode.rawFile);
+    var pgmFile = 'pgm-' + name + '.pgm';
+    var pgmPath = path.join(io.dataPath, pgmFile);
+
+    workers.extractDarkPGM(rawFilePath, pgmPath, function (err) {
+        if (err) return callback(err);
+        jNode.pgmFile = pgmFile;
+        complete();
+    });
+}
+
+
+function generateLightmap(name, io, json, jLed, taskMemo, callback)
+{
+    /*
+     * Generate a linear TIFF file that represents just the light coming from
+     * one LED, with the dark background subtracted.
+     */
+
+    if (jLed.lightFile && fs.existsSync(path.join(io.dataPath, jLed.lightFile))) {
+        return callback();
+    }
+
+    generateDarkPGM(io, json, taskMemo, jLed.darkFrame, function (err) {
+        if (err) return callback(err);
+
+        var lightFile = 'light-' + name + '.tiff';
+
+        workers.calculateLightImage(
+            path.join(io.dataPath, jLed.rawFile),
+            path.join(io.dataPath, json.darkFrames[jLed.darkFrame].pgmFile),
+            path.join(io.dataPath, lightFile),
+            function(err) {
+                if (err) return callback(err);
+
+                // Success
+                console.log("Processed lightmap " + name);
+                jLed.lightFile = lightFile;
                 callback();
             }
         );
@@ -295,7 +392,7 @@ function updateStripLength(stripIndex, jDev, callback)
 }
 
 
-function handleOneLed(led, io, json, photoCallback, finalCallback)
+function handleOneLed(led, io, json, taskMemo, photoCallback, finalCallback)
 {
     /*
      * Handle the photography and processing for a single LED.
@@ -322,6 +419,7 @@ function handleOneLed(led, io, json, photoCallback, finalCallback)
             async.apply(generateThumbnail, led.string, io, jLed),
             async.apply(generatePeakDiff, io, json, jLed),
             async.apply(updateStripLength, led.stripIndex, jDev),
+            async.apply(generateLightmap, led.string, io, json, jLed, taskMemo),
 
         ], finalCallback);
     });
@@ -416,6 +514,7 @@ function photographer(dataPath, callback)
     }
 
     var pending = join.create();
+    var taskMemo = {};
 
     var jsonPath = path.join(dataPath, 'photos.json');
     var lastSavedJson = fs.existsSync(jsonPath) ? fs.readFileSync(jsonPath) : '{}';
@@ -445,7 +544,7 @@ function photographer(dataPath, callback)
             // the JSON after each LED finishes its background processing.
 
             async.waterfall([
-                async.apply(handleOneLed, led, io, json, callback),
+                async.apply(handleOneLed, led, io, json, taskMemo, callback),
                 jsonSaveFn,
             ], pending.add());
 
