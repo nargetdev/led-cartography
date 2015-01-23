@@ -61,11 +61,11 @@ var opts = require("nomnom")
       help: 'Dark frames must be at least this recent, in seconds',
    })
    .option('denoise', {
-      default: 400,
+      default: 600,
       help: 'Lightmap denoise level',
    })
    .option('blacklevel', {
-      default: 20,
+      default: 25,
       help: 'Lightmap black level, should be high enough that background is zero',
    })
    .option('fcserver', {
@@ -86,6 +86,7 @@ var workers = workerFarm({
     'calculatePeakDiff',
     'extractDarkPGM',
     'calculateLightImage',
+    'calculateMoments',
 ]);
 
 
@@ -354,6 +355,28 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
 }
 
 
+function generateMoments(io, jLed, callback)
+{
+    /*
+     * Calculate the moments for the lightmap image.
+     * This lets us find the centroid and overall brightness of the light.
+     */
+
+    if (jLed.moments != undefined) {
+        return callback();
+    }
+
+    workers.calculateMoments(
+        path.join(io.dataPath, jLed.lightFile),
+        function (err, moments) {
+            if (err) return callback(err);
+            jLed.moments = moments;
+            callback();
+        }
+    );
+}
+
+
 function updateStripLength(stripIndex, jDev, callback)
 {
     /*
@@ -430,6 +453,7 @@ function handleOneLed(led, io, json, taskMemo, photoCallback, finalCallback)
             async.apply(generatePeakDiff, io, json, jLed),
             async.apply(updateStripLength, led.stripIndex, jDev),
             async.apply(generateLightmap, led.string, io, json, jLed, taskMemo),
+            async.apply(generateMoments, io, jLed),
 
         ], finalCallback);
     });

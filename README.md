@@ -30,17 +30,16 @@ On Mac OS, you can install libgphoto2 and dcraw with Homebrew, but npm needs som
     * Manual exposure, 1/20 or slower
     * Manual ISO 100
     * RAW image format
-    * The *brightest* part of the scene with the brightest visible LED should not be overexposed. We want an accurate measure of where the light for each LED goes, so the hotspots need to cool down a bit in our images. These images will generally look quite underexposed. That's fine.
-    * `fadecandy/examples/python/chase.py` is useful for testing this
+    * Images should be fairly underexposed, to show as much detail in the highlights as we can get
+    * `fadecandy/examples/python/chase.py` is useful for testing the exposure
 * Run `photographer.js`. It detects all attached Fadecandy boards, and takes a photo for each LED
     * It uses the camera's thumbnail to detect when the image stops changing, i.e. a particular LED string is done
     * Each LED is photographed in pseudorandom order, to decorrelate any environmental noise from LED position
-
-* TBD offline tools to analyze those images
+    * It's always safe to kill and restart this script, it picks up where it left off
+* Output files in various formats are now in the data directory!
 
 ## Ideas for later
 
-* RAW images
 * Automatically find a good exposure / LED brightness
 * Exposure bracketing / HDR
 * Support for multiple cameras and 3D reconstruction
