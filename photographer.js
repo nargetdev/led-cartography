@@ -26,6 +26,7 @@ var util = require('util');
 var randy = require('randy');
 var workerFarm = require('worker-farm');
 var join = require('join').Join;
+var aWrite = require('atomic-write');
 
 var opts = require("nomnom")
    .option('data', {
@@ -74,24 +75,6 @@ var workers = workerFarm({
 ]);
 
 
-var tempCounter = 0;
-
-function tempSuffix()
-{
-    tempCounter += 1;
-    return '_tmp' + tempCounter;
-}
-
-function atomicWriteFile(filename, data, callback)
-{
-    var tempFile = filename + tempSuffix();
-    fs.writeFile(tempFile, data, function (err) {
-        if (err) return callback(err);
-        fs.rename(tempFile, filename, callback);
-    });
-}
-
-
 function generateThumbnail(name, io, jNode, callback)
 {
     /*
@@ -105,19 +88,14 @@ function generateThumbnail(name, io, jNode, callback)
     var rawFilePath = path.join(io.dataPath, jNode.rawFile);
     var thumbFile = 'thumb-' + name + '.png';
     var thumbPath = path.join(io.dataPath, thumbFile);
-    var tempPath = thumbPath + tempSuffix();
 
-    workers.thumbnailer(rawFilePath, tempPath, opts.thumbscale, function (err) {
+    workers.thumbnailer(rawFilePath, thumbPath, opts.thumbscale, function (err) {
         if (err) return callback(err);
 
-        fs.rename(tempPath, thumbPath, function (err) {
-            if (err) return callback(err);
-
-            // Success
-            console.log("Processed thumbnail " + name);
-            jNode.thumbFile = thumbFile;
-            callback();
-        });
+        // Success
+        console.log("Processed thumbnail " + name);
+        jNode.thumbFile = thumbFile;
+        callback();
     });
 }
 
@@ -152,7 +130,7 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
 
             // Asynchronously write RAW image to disk
             var rawFile = 'raw-' + name + '.CR2';
-            atomicWriteFile(path.join(io.dataPath, rawFile), image, function(err) {
+            aWrite.writeFile(path.join(io.dataPath, rawFile), image, function(err) {
                 if (err) return finalCallback(err);
                 jNode.rawFile = rawFile;
                 finalCallback();
@@ -452,7 +430,7 @@ function photographer(dataPath, callback)
             callback();
         } else {
             lastSavedJson = savedJson;
-            atomicWriteFile(jsonPath, savedJson, callback);
+            aWrite.writeFile(jsonPath, savedJson, callback);
         }
     };
 

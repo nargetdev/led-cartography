@@ -13,7 +13,8 @@
     "nomnom": "~1.8.1",
     "worker-farm": "~1.1.0",
     "join": "~3.0.0",
-    "which": "~1.0.8"
+    "which": "~1.0.8",
+    "atomic-write": "~0.1.1"
   },
   "devDependencies": {},
   "scripts": {
