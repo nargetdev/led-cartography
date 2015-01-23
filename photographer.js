@@ -86,6 +86,7 @@ var highPriorityWorkers = workerFarm({
 }, require.resolve('./lib/image-worker.js'), [
     'thumbnailer',
     'calculatePeakDiff',
+    'calculateMoments',
 ]);
 var lowPriorityWorkers = workerFarm({
     maxConcurrentWorkers: opts.concurrency,
@@ -93,7 +94,6 @@ var lowPriorityWorkers = workerFarm({
 }, require.resolve('./lib/image-worker.js'), [
     'extractDarkPGM',
     'calculateLightImage',
-    'calculateMoments',
 ]);
 
 
@@ -301,7 +301,7 @@ function generateDarkPGM(io, json, taskMemo, index, callback)
     /*
      * Generate the pgmFile for a dark frame, if it doesn't already exist.
      */
- 
+
     var name = darkFrameName(index);
 
     // Combine this with other callbacks waiting on the same frame
@@ -334,7 +334,13 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
      * one LED, with the dark background subtracted.
      */
 
-    if (jLed.lightFile && fs.existsSync(path.join(io.dataPath, jLed.lightFile))) {
+    if (jLed.peakDiff < opts.noisethreshold) {
+        // This LED is below the noise threshold, assume it's missing
+        delete jLed.lightmap;
+        return callback();
+    }
+
+    if (jLed.lightmap && jLed.lightmap.file && fs.existsSync(path.join(io.dataPath, jLed.lightmap.file))) {
         return callback();
     }
 
@@ -354,8 +360,7 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
 
                 // Success
                 console.log("Processed lightmap " + name);
-                jLed.lightFile = lightFile;
-                delete jLed.moments;
+                jLed.lightmap = {file: lightFile};
                 callback();
             }
         );
@@ -368,17 +373,23 @@ function generateMoments(io, jLed, callback)
     /*
      * Calculate the moments for the lightmap image.
      * This lets us find the centroid and overall brightness of the light.
+     * Also saves the lightmap size, since we're reading it in anyway.
      */
 
-    if (jLed.moments != undefined) {
+    if (jLed.lightmap.moments != undefined) {
         return callback();
     }
 
-    lowPriorityWorkers.calculateMoments(
-        path.join(io.dataPath, jLed.lightFile),
-        function (err, moments) {
+    highPriorityWorkers.calculateMoments(
+        path.join(io.dataPath, jLed.lightmap.file),
+        function (err, obj) {
             if (err) return callback(err);
-            jLed.moments = moments;
+            jLed.lightmap.moments = obj.moments;
+            jLed.lightmap.size = obj.size;
+            jLed.lightmap.centroid = {
+                x: obj.moments.m10 / obj.moments.m00 / obj.size.width,
+                y: obj.moments.m01 / obj.moments.m00 / obj.size.height
+            };
             callback();
         }
     );
@@ -574,6 +585,12 @@ function photographer(dataPath, callback)
             aWrite.writeFile(jsonPath, savedJson, callback);
         }
     };
+
+    process.on('SIGINT', function () {
+        jsonSaveFn(function () {
+            process.exit(0);
+        });
+    });
 
     ioSetup(function (err, io) {
         if (err) return callback(err);
