@@ -185,6 +185,12 @@ function photographLed(led, io, jLed, photoCallback, finalCallback)
 }
 
 
+function darkFrameName(index)
+{
+    return 'dark-' + index;
+}
+
+
 function photographDarkness(io, json, index, callback)
 {
     /*
@@ -196,7 +202,7 @@ function photographDarkness(io, json, index, callback)
 
     var jFrame = (json.darkFrames[index] = json.darkFrames[index] || {});
 
-    photographCommon('dark-' + index, io, jFrame, function (callback) {
+    photographCommon(darkFrameName(index), io, jFrame, function (callback) {
 
         console.log('Photographing dark frame ' + index);
         io.fc.lightsOff(callback);
@@ -244,14 +250,22 @@ function generatePeakDiff(io, json, jLed, callback)
         return callback();
     }
 
-    workers.calculatePeakDiff(
-        path.join(io.dataPath, json.darkFrames[jLed.darkFrame].thumbFile),
-        path.join(io.dataPath, jLed.thumbFile),
-        function (err, result) {
-            jLed.peakDiff = result;
-            callback();
-        }
-    );
+    var darkIndex = jLed.darkFrame;
+    var darkNode = json.darkFrames[darkIndex];
+    var darkName = darkFrameName(darkIndex);
+
+    generateThumbnail(darkName, io, darkNode, function (err) {
+        if (err) return callback(err);
+
+        workers.calculatePeakDiff(
+            path.join(io.dataPath, json.darkFrames[jLed.darkFrame].thumbFile),
+            path.join(io.dataPath, jLed.thumbFile),
+            function (err, result) {
+                jLed.peakDiff = result;
+                callback();
+            }
+        );
+    });
 }
 
 
