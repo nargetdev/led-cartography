@@ -18,22 +18,24 @@ var opts = require("nomnom")
       help: 'Data directory for photos and JSON'
    })
    .option('layout', {
-      abbr: 'l',
       help: 'Path to JSON layout file we output [<data>/layout.json]'
    })
    .option('config', {
-      abbr: 'c',
       help: 'Path to JSON config file we output [<data>/fcserver.json]'
    })
-   .option('scale', {
-      abbr: 's',
-      default: 4,
-      help: 'How many OPC units wide should our photos be?'
+   .option('center', {
+      abbr: 'c',
+      flag: true,
+      help: 'Place the origin at the center of the image [default: top-left]'
+   })
+   .option('width', {
+      abbr: 'w',
+      help: 'Scale images to be this wide in layout units [default: unscaled pixels]'
    })
    .option('plane', {
       abbr: 'p',
-      default: 'xz',
-      help: 'Which 2D plane should we map the photos to?'
+      default: 'xy',
+      help: 'Which 2D plane should we extract into the SVG?'
    })
    .parse();
 
@@ -63,13 +65,24 @@ for (var serial in photos.devices) {
         if (led.lightmap) {
             var opcIndex = cf.mapPixel(serial, index);
             var centroid = led.lightmap.centroid;
-            var aspect = led.lightmap.size.width / led.lightmap.size.height;
+            var size = led.lightmap.size;
+
+            var x = centroid.x;
+            var y = centroid.y;
+
+            if (opts.center) {
+                x -= size.width / 2;
+                y -= size.height / 2;
+            }
+
+            if (opts.width != null) {
+                var s = opts.width / size.width;
+                x *= s;
+                y *= s;
+            }
 
             layout[opcIndex] = {
-                point: mapToPlane(
-                    (centroid.x - 0.5) * opts.scale,
-                    (centroid.y - 0.5) * opts.scale / aspect
-                )
+                point: mapToPlane(x, y)
             };
         }
     }
