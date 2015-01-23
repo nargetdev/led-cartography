@@ -60,6 +60,14 @@ var opts = require("nomnom")
       default: 60,
       help: 'Dark frames must be at least this recent, in seconds',
    })
+   .option('denoise', {
+      default: 400,
+      help: 'Lightmap denoise level',
+   })
+   .option('blacklevel', {
+      default: 20,
+      help: 'Lightmap black level, should be high enough that background is zero',
+   })
    .option('fcserver', {
       default: 'ws://localhost:7890',
       help: 'Fadecandy server URL',
@@ -314,7 +322,7 @@ function generateDarkPGM(io, json, taskMemo, index, callback)
 function generateLightmap(name, io, json, jLed, taskMemo, callback)
 {
     /*
-     * Generate a linear TIFF file that represents just the light coming from
+     * Generate a linear 16-bit PNG file that represents just the light coming from
      * one LED, with the dark background subtracted.
      */
 
@@ -325,12 +333,14 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
     generateDarkPGM(io, json, taskMemo, jLed.darkFrame, function (err) {
         if (err) return callback(err);
 
-        var lightFile = 'light-' + name + '.tiff';
+        var lightFile = 'light-' + name + '.png';
 
         workers.calculateLightImage(
             path.join(io.dataPath, jLed.rawFile),
             path.join(io.dataPath, json.darkFrames[jLed.darkFrame].pgmFile),
             path.join(io.dataPath, lightFile),
+            opts.denoise,
+            opts.blacklevel,
             function(err) {
                 if (err) return callback(err);
 
