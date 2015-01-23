@@ -387,8 +387,8 @@ function generateMoments(io, jLed, callback)
             jLed.lightmap.moments = obj.moments;
             jLed.lightmap.size = obj.size;
             jLed.lightmap.centroid = {
-                x: obj.moments.m10 / obj.moments.m00 / obj.size.width,
-                y: obj.moments.m01 / obj.moments.m00 / obj.size.height
+                x: obj.moments.m10 / obj.moments.m00,
+                y: obj.moments.m01 / obj.moments.m00
             };
             callback();
         }
