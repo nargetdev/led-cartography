@@ -76,14 +76,21 @@ var opts = require("nomnom")
 
 
 /*
- * CPU-hungry image manipulation routines run in a worker pool
+ * Two worker pools for CPU-hungry image manipulation routines,
+ * one for high-priority and one for low-priority.
  */
-var workers = workerFarm({
+
+var highPriorityWorkers = workerFarm({
     maxConcurrentWorkers: opts.concurrency,
     maxConcurrentCallsPerWorker: 1,
 }, require.resolve('./lib/image-worker.js'), [
     'thumbnailer',
     'calculatePeakDiff',
+]);
+var lowPriorityWorkers = workerFarm({
+    maxConcurrentWorkers: opts.concurrency,
+    maxConcurrentCallsPerWorker: 1,
+}, require.resolve('./lib/image-worker.js'), [
     'extractDarkPGM',
     'calculateLightImage',
     'calculateMoments',
@@ -104,7 +111,7 @@ function generateThumbnail(name, io, jNode, callback)
     var thumbFile = 'thumb-' + name + '.png';
     var thumbPath = path.join(io.dataPath, thumbFile);
 
-    workers.thumbnailer(rawFilePath, thumbPath, opts.thumbscale, function (err) {
+    highPriorityWorkers.thumbnailer(rawFilePath, thumbPath, opts.thumbscale, function (err) {
         if (err) return callback(err);
 
         // Success
@@ -155,7 +162,7 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
 }
 
 
-function photographLed(led, io, jLed, photoCallback, finalCallback)
+function photographLed(led, io, json, jLed, photoCallback, finalCallback)
 {
     // Photograph a single LED only if the json doesn't already contain a valid RAW photo.
     // Takes dark frames as necessary. This is a no-op if the photo already exists.
@@ -250,7 +257,7 @@ function generatePeakDiff(io, json, jLed, callback)
     generateThumbnail(darkName, io, darkNode, function (err) {
         if (err) return callback(err);
 
-        workers.calculatePeakDiff(
+        highPriorityWorkers.calculatePeakDiff(
             path.join(io.dataPath, json.darkFrames[jLed.darkFrame].thumbFile),
             path.join(io.dataPath, jLed.thumbFile),
             function (err, result) {
@@ -312,7 +319,7 @@ function generateDarkPGM(io, json, taskMemo, index, callback)
     var pgmFile = 'pgm-' + name + '.pgm';
     var pgmPath = path.join(io.dataPath, pgmFile);
 
-    workers.extractDarkPGM(rawFilePath, pgmPath, function (err) {
+    lowPriorityWorkers.extractDarkPGM(rawFilePath, pgmPath, function (err) {
         if (err) return callback(err);
         jNode.pgmFile = pgmFile;
         complete();
@@ -336,7 +343,7 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
 
         var lightFile = 'light-' + name + '.png';
 
-        workers.calculateLightImage(
+        lowPriorityWorkers.calculateLightImage(
             path.join(io.dataPath, jLed.rawFile),
             path.join(io.dataPath, json.darkFrames[jLed.darkFrame].pgmFile),
             path.join(io.dataPath, lightFile),
@@ -348,6 +355,7 @@ function generateLightmap(name, io, json, jLed, taskMemo, callback)
                 // Success
                 console.log("Processed lightmap " + name);
                 jLed.lightFile = lightFile;
+                delete jLed.moments;
                 callback();
             }
         );
@@ -366,7 +374,7 @@ function generateMoments(io, jLed, callback)
         return callback();
     }
 
-    workers.calculateMoments(
+    lowPriorityWorkers.calculateMoments(
         path.join(io.dataPath, jLed.lightFile),
         function (err, moments) {
             if (err) return callback(err);
@@ -444,7 +452,7 @@ function handleOneLed(led, io, json, taskMemo, photoCallback, finalCallback)
 
     var jLed = (jDev.leds[led.index] = jDev.leds[led.index] || {});
 
-    photographLed(led, io, jLed, photoCallback, function (err) {
+    photographLed(led, io, json, jLed, photoCallback, function (err) {
         if (err) return finalCallback(err);
         async.waterfall([
             // Asynchronous processing for each photo
@@ -573,12 +581,20 @@ function photographer(dataPath, callback)
 
         async.mapSeries(collectLeds(io, json), function (led, callback) {
 
-            // Immediately after photography, move to the next LED- but make
-            // sure the processing callbacks finish eventually. Also checkpoint
-            // the JSON after each LED finishes its background processing.
+            /*
+             * Immediately after photography, move to the next LED- but make
+             * sure the processing callbacks finish eventually. Also checkpoint
+             * the JSON after each LED finishes its background processing as
+             * well as after each photo is taken.
+             */
+
+            function nextPhoto(err) {
+                if (err) return callback(err);
+                jsonSaveFn(callback);
+            }
 
             async.waterfall([
-                async.apply(handleOneLed, led, io, json, taskMemo, callback),
+                async.apply(handleOneLed, led, io, json, taskMemo, nextPhoto),
                 jsonSaveFn,
             ], pending.add());
 
@@ -593,7 +609,8 @@ function photographer(dataPath, callback)
 
             console.log("Waiting for processing tasks to complete");
             pending.then(function () {
-                workerFarm.end(workers);
+                workerFarm.end(lowPriorityWorkers);
+                workerFarm.end(highPriorityWorkers);
                 callback();
             });
         });
