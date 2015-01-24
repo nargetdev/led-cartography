@@ -3,7 +3,9 @@
 Experimental LED mapping tools to use alongside Fadecandy.
 
 * Infer layout from physical structure using a camera
-* Convert layout to an editable SVG
+* Create linear 16-bit PNG images representing the light contribution from each LED
+* Generates Fadecandy config files and Open Pixel Control layouts
+* Converts layout to an editable SVG
 * Merge edited SVG back into layout
 
 ## Dependencies
@@ -37,6 +39,7 @@ On Mac OS, you can install libgphoto2 and dcraw with Homebrew, but npm needs som
     * Each LED is photographed in pseudorandom order, to decorrelate any environmental noise from LED position
     * It's always safe to kill and restart this script, it picks up where it left off
 * Output files in various formats are now in the data directory!
+* To generate a simple 2D layout and fcserver config, run `mapper-2d.js`
 
 ## Ideas for later
 
