@@ -376,7 +376,8 @@ function generateMoments(io, jLed, callback)
      * Also saves the lightmap size, since we're reading it in anyway.
      */
 
-    if (jLed.lightmap.moments != undefined) {
+    if (jLed.lightmap == undefined || jLed.lightmap.moments != undefined) {
+        // No lightmap (too dark), or moments already calculated
         return callback();
     }
 
