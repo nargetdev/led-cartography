@@ -588,8 +588,10 @@ function photographer(dataPath, callback)
     };
 
     process.on('SIGINT', function () {
+        console.log("\nInterrupted; saving work.");
         jsonSaveFn(function () {
-            process.exit(0);
+            // process.exit would often hang if we're stuck in gphoto
+            process.kill(process.pid, 'SIGTERM');
         });
     });
 
