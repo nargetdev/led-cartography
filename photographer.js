@@ -150,6 +150,10 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
             // Timestamp as soon as the photo was taken
             jNode.timestamp = new Date().toJSON();
 
+            // Delete data that's generated based on the raw photo
+            delete jNode.thumbFile;
+            delete jNode.lightmap;
+
             // As soon as we've taken the picture, move on to the next step
             // and process the photo a little in the background.
             photoCallback();
