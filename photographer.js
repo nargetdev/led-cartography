@@ -177,7 +177,7 @@ function photographLed(led, io, json, jLed, photoCallback, finalCallback)
 
     photographCommon(led.string, io, jLed, function (callback) {
 
-        var darkFrame = jLed.darkFrame || currentDarkFrameIndex(json);
+        var darkFrame = currentDarkFrameIndex(json);
 
         photographDarkness(io, json, darkFrame, function (err) {
             if (err) return finalCallback(err);
