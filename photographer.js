@@ -72,6 +72,10 @@ var opts = require("nomnom")
       default: 'ws://localhost:7890',
       help: 'Fadecandy server URL',
    })
+   .option('striplimit', {
+      default: 8,
+      help: 'Optionally limit the number of strips used per controller'
+   })
    .parse();
 
 
@@ -557,6 +561,11 @@ function collectLeds(io, json)
     }
 
     leds.sort(function (a,b) { return a.stripPosition - b.stripPosition; });
+
+    leds = leds.filter(function(led) {
+        return led.stripIndex < opts.striplimit;
+    });
+
     return leds;
 }
 
