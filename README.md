@@ -18,10 +18,10 @@ Experimental LED mapping tools to use alongside Fadecandy.
 * OpenCV, for analyzing images
 * Node.js and some NPM modules listed in `package.json`
 
-On Mac OS, you can install libgphoto2 and dcraw with Homebrew, but npm needs some help to find the libraries:
+On Mac OS, you can install libgphoto2 and dcraw with Homebrew:
 
     brew install gphoto2 dcraw opencv netpbm
-    CXXFLAGS=-I/usr/local/include LDFLAGS=-L/usr/local/lib npm install
+    npm install
 
 ## Steps
 
