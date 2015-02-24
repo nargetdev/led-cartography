@@ -65,7 +65,7 @@ var opts = require("nomnom")
       help: 'Lightmap denoise level',
    })
    .option('blacklevel', {
-      default: 25,
+      default: 300,
       help: 'Lightmap black level, should be high enough that background is zero',
    })
    .option('fcserver', {
