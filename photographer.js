@@ -136,6 +136,7 @@ function photographCommon(name, io, jNode, prepFn, photoCallback, finalCallback)
      */
 
     if (jNode.rawFile && fs.existsSync(path.join(io.dataPath, jNode.rawFile))) {
+        console.log("Skipping existing photo for " + name);
         photoCallback();
         finalCallback();
         return;
@@ -586,11 +587,13 @@ function photographer(dataPath, callback)
     var jsonPath = path.join(dataPath, 'photos.json');
     var lastSavedJson = fs.existsSync(jsonPath) ? fs.readFileSync(jsonPath) : '{}';
     var json = JSON.parse(lastSavedJson);
+    var lastJsonSaveCheckTimestamp = null;
     json.devices = json.devices || {};
     json.darkFrames = json.darkFrames || [];
 
     var jsonSaveFn = function (callback) {
         // Only write the JSON if it's changed
+        lastJsonSaveCheckTimestamp = new Date().getTime();
         var savedJson = JSON.stringify(json, null, '\t');
         if (savedJson == lastSavedJson) {
             callback();
@@ -599,6 +602,18 @@ function photographer(dataPath, callback)
             aWrite.writeFile(jsonPath, savedJson, callback);
         }
     };
+
+    var jsonPeriodicSaveFn = function (callback) {
+        // Limit how often we check if the JSON needs saving,
+        // to prevent huge slowdown in scanning through completed photos
+  
+        var now = new Date().getTime();
+        if (lastJsonSaveCheckTimestamp == null || now - lastJsonSaveCheckTimestamp > 1000) {
+            jsonSaveFn(callback);
+        } else {
+            callback();
+        }
+    }
 
     process.on('SIGINT', function () {
         console.log("\nInterrupted; saving work.");
@@ -623,12 +638,12 @@ function photographer(dataPath, callback)
 
             function nextPhoto(err) {
                 if (err) return callback(err);
-                jsonSaveFn(callback);
+                jsonPeriodicSaveFn(callback);
             }
 
             async.waterfall([
                 async.apply(handleOneLed, led, io, json, taskMemo, nextPhoto),
-                jsonSaveFn,
+                jsonPeriodicSaveFn,
             ], pending.add());
 
         }, function (err) {
