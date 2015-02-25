@@ -62,29 +62,40 @@ for (var serial in photos.devices) {
         index = index|0;
         var led = jDev.leds[index];
 
-        if (led.lightmap) {
-            var opcIndex = cf.mapPixel(serial, index);
-            var centroid = led.lightmap.centroid;
-            var size = led.lightmap.size;
-
-            var x = centroid.x;
-            var y = centroid.y;
-
-            if (opts.center) {
-                x -= size.width / 2;
-                y -= size.height / 2;
-            }
-
-            if (opts.width != null) {
-                var s = opts.width / size.width;
-                x *= s;
-                y *= s;
-            }
-
-            layout[opcIndex] = {
-                point: mapToPlane(x, y)
-            };
+        if (!led.lightmap) {
+            // Skipped this pixel entirely because it didn't show up on the thumbnail
+            continue;
         }
+
+        var size = led.lightmap.size;
+        var centroid = led.lightmap.centroid;
+        var x = centroid.x;
+        var y = centroid.y;
+
+        if (x == null || y == null) {
+            // Got as far as lightmap calculation when it turns out the image was all-zero.
+            // This happens if there's enough light to make it past the "noisethreshold" but
+            // not enough to make it above the "blacklevel" after processing.
+            continue;
+        }
+
+        // Allocate this LED in the OPC index space
+        var opcIndex = cf.mapPixel(serial, index);
+
+        if (opts.center) {
+            x -= size.width / 2;
+            y -= size.height / 2;
+        }
+
+        if (opts.width != null) {
+            var s = opts.width / size.width;
+            x *= s;
+            y *= s;
+        }
+
+        layout[opcIndex] = {
+            point: mapToPlane(x, y)
+        };
     }
 }
 
