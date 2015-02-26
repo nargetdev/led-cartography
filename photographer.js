@@ -659,7 +659,7 @@ function photographer(dataPath, callback)
             pending.then(function () {
                 workerFarm.end(lowPriorityWorkers);
                 workerFarm.end(highPriorityWorkers);
-                callback();
+                jsonSaveFn(callback);
             });
         });
     });
