@@ -3,6 +3,10 @@
  * Use photometric data gathered by 'photographer.js',
  * generate an fcserver config file and an LED layout.
  *
+ * This can operate on a single photography run, or it can
+ * combine data from multiple mapping sessions. Later mappings
+ * will override earlier on a per-controller basis.
+ *
  * Copyright (c) 2015 Micah Elizabeth Scott
  * Released under the MIT license, see the accompanying LICENSE file.
  */
@@ -12,16 +16,19 @@ var fs = require('fs');
 var path = require('path');
 
 var opts = require("nomnom")
-   .option('data', {
-      abbr: 'd',
+   .option('inputs', {
+      position: 0,
       required: true,
-      help: 'Data directory for photos and JSON'
+      list: true,
+      help: 'One or more input files (photos.json)'
    })
    .option('layout', {
-      help: 'Path to JSON layout file we output [<data>/layout.json]'
+      default: 'layout.json',
+      help: 'Path to JSON layout file we output'
    })
    .option('config', {
-      help: 'Path to JSON config file we output [<data>/fcserver.json]'
+      default: 'fcserver.json',
+      help: 'Path to JSON config file we output'
    })
    .option('center', {
       abbr: 'c',
@@ -39,10 +46,6 @@ var opts = require("nomnom")
    })
    .parse();
 
-opts.config = opts.config || path.join(opts.data, 'fcserver.json');
-opts.layout = opts.layout || path.join(opts.data, 'layout.json');
-var photos = JSON.parse(fs.readFileSync(path.join(opts.data, 'photos.json')))
-
 var cf = new fadecandy.ConfigFactory();
 var layout = [];
 
@@ -55,8 +58,20 @@ function mapToPlane(x, y) {
     return point;
 }
 
-for (var serial in photos.devices) {
-    var jDev = photos.devices[serial];
+// Combine inputs into one master device list
+var devices = {};
+for (var i = 0; i < opts.inputs.length; i++) {
+    var jPhotos = JSON.parse(fs.readFileSync(opts.inputs[i]));
+    for (var serial in jPhotos.devices) {
+        var jDev = jPhotos.devices[serial];
+        jDev._filename = opts.inputs[i];
+        devices[serial] = jDev;
+    }
+}
+
+for (var serial in devices) {
+    var jDev = devices[serial];
+    console.log("Device " + serial + " from " + jDev._filename);
 
     for (var index in jDev.leds) {
         index = index|0;
@@ -65,6 +80,10 @@ for (var serial in photos.devices) {
         if (!led.lightmap) {
             // Skipped this pixel entirely because it didn't show up on the thumbnail
             continue;
+        }
+
+        if (!led.lightmap.moments) {
+            throw "Missing moments analysis for " + serial + "-" + index;
         }
 
         var size = led.lightmap.size;
